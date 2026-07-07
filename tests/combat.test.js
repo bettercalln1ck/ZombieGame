@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { dist, clamp, aabbOverlap, mulberry32 } from '../src/utils.js';
+import { applyDamage, splashTargets } from '../src/systems/combat.js';
 
 describe('utils', () => {
   it('dist computes euclidean distance', () => {
@@ -17,5 +18,22 @@ describe('utils', () => {
   it('mulberry32 is deterministic for a seed', () => {
     const a = mulberry32(42); const b = mulberry32(42);
     expect(a()).toBe(b());
+  });
+});
+
+describe('combat', () => {
+  it('applyDamage reduces hp and reports death', () => {
+    const e = { hp: 10 };
+    expect(applyDamage(e, 4)).toBe(false);
+    expect(e.hp).toBe(6);
+    expect(applyDamage(e, 6)).toBe(true);
+    expect(e.hp).toBe(0);
+  });
+  it('splashTargets returns entities within radius', () => {
+    const list = [
+      { x: 0, y: 0 }, { x: 50, y: 0 }, { x: 300, y: 0 },
+    ];
+    const hit = splashTargets(list, 0, 0, 100);
+    expect(hit.length).toBe(2);
   });
 });
