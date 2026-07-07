@@ -68,6 +68,27 @@ async function main() {
     const shot = process.env.SHOT || '/private/tmp/claude-501/-Users-nikhilkumar-Documents-toptal-Game/522b577b-54b9-4ac5-a497-39182302050f/scratchpad/last-stand-3d.png';
     await page.screenshot({ path: shot });
 
+    // Drive a combat scene: fortify with a ring of turrets, jump to DEFEND, spawn
+    // zombies. Verifies textures + turrets tracking/hitting moving zombies.
+    await page.evaluate(() => {
+      const g = globalThis.__game;
+      g.inventory.wood = 999; g.inventory.metal = 999;
+      const cx = g.base.x, cy = g.base.y;
+      for (let a = 0; a < Math.PI * 2; a += Math.PI / 5) {
+        g.selected = 'turret';
+        g.input.world = { x: cx + Math.cos(a) * 150, y: cy + Math.sin(a) * 150 };
+        g.input.mouse = { x: 640, y: 360, clicked: true };
+        g.handleClick();
+      }
+      // jump to defend and make the wave spawn almost immediately
+      if (g.phase === 'GATHER') g.advancePhase();
+      g.spawnSchedule.forEach((s, i) => { s.time = 0.2 + i * 0.08; });
+    });
+    await sleep(5000); // let zombies spawn, turrets track & fire
+    const combatShot = shot.replace(/\.png$/, '-combat.png');
+    await page.screenshot({ path: combatShot });
+    console.log('combat screenshot:', combatShot);
+
     console.log('boot after load:', JSON.stringify(boot));
     console.log('boot after interact:', JSON.stringify(boot2));
     console.log('webgl sample:', JSON.stringify(drew));

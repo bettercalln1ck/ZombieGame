@@ -13,6 +13,7 @@ export class Defense {
     this.blocks = def.blocks;
     this.cooldown = 0;
     this.tickTimer = 0;
+    this.justFired = 0;
     this.armed = type === 'bomb';
     this.dead = false;
     this.flash = 0;
@@ -28,6 +29,7 @@ export class Defense {
 
   update(dt, zombies, effects, audio) {
     if (this.flash > 0) this.flash -= dt;
+    if (this.justFired > 0) this.justFired -= dt;
 
     if (this.type === 'turret') {
       this.cooldown -= dt;
@@ -39,8 +41,9 @@ export class Defense {
         }
         if (target) {
           this.cooldown = this.def.fireInterval;
+          this.justFired = 0.12; // brief muzzle-flash window for the renderer
           audio.shoot();
-          return new Projectile(this.x, this.y, target.x, target.y, 520, this.def.damage, 'bullet');
+          return new Projectile(this.x, this.y, target.x, target.y, 640, this.def.damage, 'bullet', target);
         }
       }
     }

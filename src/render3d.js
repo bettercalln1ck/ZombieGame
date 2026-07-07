@@ -14,6 +14,69 @@ const HUD_W = 1280, HUD_H = 720; // overlay logical size (matches ui.js layout)
 
 function col(hex) { return new THREE.Color(hex); }
 
+// --- Procedural Minecraft-style pixel textures (no image assets) ---
+function pixelCanvas(size, draw) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const g = c.getContext('2d');
+  draw(g, size);
+  const tex = new THREE.CanvasTexture(c);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestMipmapNearestFilter;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+function px(g, x, y, w, h, color) { g.fillStyle = color; g.fillRect(x, y, w, h); }
+function jitter(base, amt) {
+  const c = new THREE.Color(base);
+  const j = (Math.random() - 0.5) * amt;
+  c.offsetHSL(0, 0, j);
+  return '#' + c.getHexString();
+}
+
+let _tex = null;
+function textures() {
+  if (_tex) return _tex;
+  const N = 16;
+  // WOOD: vertical planks with grain streaks
+  const wood = pixelCanvas(N, (g) => {
+    for (let x = 0; x < N; x++) for (let y = 0; y < N; y++) {
+      const plank = Math.floor(x / 8);
+      let base = plank === 0 ? '#8a5a2b' : '#7a4d24';
+      if (x % 8 === 0) base = '#5e3a1a';          // plank seam
+      px(g, x, y, 1, 1, jitter(base, 0.10));
+    }
+    for (let x = 0; x < N; x++) if (Math.random() < 0.25) px(g, x, (Math.random() * N) | 0, 1, 1, '#6b4420');
+  });
+  // METAL: iron block with rivets + highlight
+  const metal = pixelCanvas(N, (g) => {
+    for (let x = 0; x < N; x++) for (let y = 0; y < N; y++) px(g, x, y, 1, 1, jitter('#9aa3ad', 0.10));
+    px(g, 0, 0, N, 1, '#c6ced8'); px(g, 0, 0, 1, N, '#c6ced8');   // top/left highlight
+    px(g, 0, N - 1, N, 1, '#5c636c'); px(g, N - 1, 0, 1, N, '#5c636c'); // shadow
+    for (const [rx, ry] of [[2, 2], [N - 3, 2], [2, N - 3], [N - 3, N - 3]]) { px(g, rx, ry, 2, 2, '#454b54'); px(g, rx, ry, 1, 1, '#d4dbe4'); }
+  });
+  // FOOD: emerald-ish gem block, bright
+  const food = pixelCanvas(N, (g) => {
+    for (let x = 0; x < N; x++) for (let y = 0; y < N; y++) px(g, x, y, 1, 1, jitter('#3fd06a', 0.12));
+    px(g, 3, 3, 4, 4, '#7dffa6'); px(g, 9, 8, 3, 3, '#1f9a4a');
+  });
+  // COBBLESTONE ground: tileable stone with grout + specks
+  const G = 32;
+  const cobble = pixelCanvas(G, (g) => {
+    px(g, 0, 0, G, G, '#2b323c');
+    for (let i = 0; i < 26; i++) {
+      const w = 4 + ((Math.random() * 7) | 0), h = 4 + ((Math.random() * 7) | 0);
+      const x = (Math.random() * (G - w)) | 0, y = (Math.random() * (G - h)) | 0;
+      px(g, x, y, w, h, jitter('#3a434f', 0.12));
+      px(g, x, y, w, 1, jitter('#485360', 0.08));
+    }
+  });
+  cobble.wrapS = cobble.wrapT = THREE.RepeatWrapping;
+  cobble.repeat.set(WORLD.width / 96, WORLD.height / 96);
+  _tex = { wood, metal, food, cobble };
+  return _tex;
+}
+
 export class Renderer3D {
   constructor(canvas, stage) {
     this.canvas = canvas;
@@ -23,10 +86,12 @@ export class Renderer3D {
     this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.15;
 
     this.scene = new THREE.Scene();
-    this.scene.background = col('#0a0d12');
-    this.scene.fog = new THREE.Fog(0x0a0d12, 900, 2200);
+    this.scene.background = col('#0b1220');
+    this.scene.fog = new THREE.FogExp2(0x0b1220, 0.00055);
 
     this.camera = new THREE.PerspectiveCamera(45, 16 / 9, 1, 6000);
     this.camBase = new THREE.Vector3(WORLD.width / 2, 900, WORLD.height / 2 + 800);
@@ -54,6 +119,8 @@ export class Renderer3D {
     this.scene.add(this._rangeRing);
     this._particles = this._buildParticles();
     this.scene.add(this._particles);
+    this._embers = this._buildEmbers();
+    this.scene.add(this._embers);
 
     this._raycaster = new THREE.Raycaster();
     this._groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -66,9 +133,13 @@ export class Renderer3D {
 
   // ---- setup helpers ----
   _lights() {
-    this.scene.add(new THREE.HemisphereLight(0x9fb8d8, 0x1a1710, 0.55));
-    const sun = new THREE.DirectionalLight(0xffe9c8, 1.5);
-    sun.position.set(WORLD.width / 2 - 500, 1200, WORLD.height / 2 - 200);
+    // Night-apocalypse mood: cool sky fill + warm "moon/searchlight" key,
+    // plus a colored rim light so silhouettes pop against the dark ground.
+    this.scene.add(new THREE.HemisphereLight(0x6f86b8, 0x120f0a, 0.7));
+    this.scene.add(new THREE.AmbientLight(0x22304a, 0.5));
+
+    const sun = new THREE.DirectionalLight(0xfff0d0, 2.4);
+    sun.position.set(WORLD.width / 2 - 500, 1300, WORLD.height / 2 - 250);
     sun.target.position.set(WORLD.width / 2, 0, WORLD.height / 2);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
@@ -79,6 +150,16 @@ export class Renderer3D {
     sun.shadow.bias = -0.0004;
     this.scene.add(sun); this.scene.add(sun.target);
     this._sun = sun;
+
+    // teal rim from the opposite side for depth/contrast
+    const rim = new THREE.DirectionalLight(0x3fd0ff, 0.9);
+    rim.position.set(WORLD.width / 2 + 700, 500, WORLD.height / 2 + 700);
+    this.scene.add(rim);
+
+    // warm glow anchored at the base (like the home lights spilling out)
+    const baseGlow = new THREE.PointLight(0xffb347, 1.6, 700, 2);
+    baseGlow.position.set(BASE.x, 90, BASE.y);
+    this.scene.add(baseGlow);
   }
 
   _ground() {
@@ -90,10 +171,10 @@ export class Renderer3D {
     g.receiveShadow = true;
     this.scene.add(g);
 
-    // playfield tint + subtle grid
+    // playfield: cobblestone texture
     const field = new THREE.Mesh(
       new THREE.PlaneGeometry(WORLD.width, WORLD.height),
-      new THREE.MeshStandardMaterial({ color: 0x252c35, roughness: 0.9 })
+      new THREE.MeshStandardMaterial({ map: textures().cobble, color: 0x9aa2ac, roughness: 0.95 })
     );
     field.rotation.x = -Math.PI / 2;
     field.position.set(WORLD.width / 2, 0.5, WORLD.height / 2);
@@ -126,7 +207,7 @@ export class Renderer3D {
   _composer() {
     const c = new EffectComposer(this.renderer);
     c.addPass(new RenderPass(this.scene, this.camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(1280, 720), 0.9, 0.5, 0.75);
+    const bloom = new UnrealBloomPass(new THREE.Vector2(1280, 720), 1.25, 0.6, 0.62);
     c.addPass(bloom);
     c.addPass(new OutputPass());
     this.composer = c;
@@ -195,6 +276,14 @@ export class Renderer3D {
       new THREE.MeshStandardMaterial({ color: col(def.color).offsetHSL(0, 0, 0.08), roughness: 0.6 }));
     head.position.y = r * 2.5; head.castShadow = true;
     g.add(head);
+    // glowing eyes (bloom) — red for melee, cyan for spitter
+    const eyeColor = z.type === 'spitter' ? 0x8affff : 0xff3b2f;
+    const eyeMat = new THREE.MeshStandardMaterial({ color: eyeColor, emissive: eyeColor, emissiveIntensity: 3 });
+    for (const ex of [-1, 1]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(r * 0.16, 8, 6), eyeMat);
+      eye.position.set(ex * r * 0.22, r * 2.55, r * 0.5);
+      g.add(eye);
+    }
     g.userData.body = body;
     g.userData.baseColor = col(def.color);
     g.userData.bar = this._hpBar(r * 3.3, r * 2);
@@ -234,10 +323,13 @@ export class Renderer3D {
       ball.position.y = 11; ball.castShadow = true; g.add(ball);
       g.userData.ball = ball;
     } else {
-      // barricade / wall
+      // barricade = wood block, wall = metal block (Minecraft-style textures)
       const h = d.type === 'wall' ? 34 : 20;
-      const box = new THREE.Mesh(new THREE.BoxGeometry(d.size, h, d.size),
-        new THREE.MeshStandardMaterial({ color: c, roughness: d.type === 'wall' ? 0.5 : 0.85, metalness: d.type === 'wall' ? 0.5 : 0.05 }));
+      const tx = textures();
+      const mat = d.type === 'wall'
+        ? new THREE.MeshStandardMaterial({ map: tx.metal, roughness: 0.4, metalness: 0.85 })
+        : new THREE.MeshStandardMaterial({ map: tx.wood, roughness: 0.85, metalness: 0.05 });
+      const box = new THREE.Mesh(new THREE.BoxGeometry(d.size, h, d.size), mat);
       box.position.y = h / 2; box.castShadow = true; box.receiveShadow = true; g.add(box);
       g.userData.body = box;
       g.userData.bar = this._hpBar(h + 10, d.size);
@@ -248,14 +340,20 @@ export class Renderer3D {
   }
 
   _resourceMesh(r) {
-    let geo, color, emissive;
-    if (r.type === 'wood') { geo = new THREE.BoxGeometry(16, 16, 16); color = 0xa9743b; emissive = 0x5a3a15; }
-    else if (r.type === 'metal') { geo = new THREE.IcosahedronGeometry(11, 0); color = 0xcdd6e2; emissive = 0x33404f; }
-    else { geo = new THREE.SphereGeometry(10, 16, 12); color = 0x5cd65c; emissive = 0x1f7a1f; }
-    const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
-      color, emissive, emissiveIntensity: 0.9, roughness: 0.4, metalness: r.type === 'metal' ? 0.8 : 0.2,
-    }));
+    const tx = textures();
+    let mat;
+    if (r.type === 'wood') {
+      mat = new THREE.MeshStandardMaterial({ map: tx.wood, roughness: 0.85, metalness: 0.05, emissiveMap: tx.wood, emissive: 0xffffff, emissiveIntensity: 0.25 });
+    } else if (r.type === 'metal') {
+      mat = new THREE.MeshStandardMaterial({ map: tx.metal, roughness: 0.35, metalness: 0.9, emissiveMap: tx.metal, emissive: 0xffffff, emissiveIntensity: 0.2 });
+    } else {
+      mat = new THREE.MeshStandardMaterial({ map: tx.food, roughness: 0.4, metalness: 0.1, emissiveMap: tx.food, emissive: 0xffffff, emissiveIntensity: 0.7 });
+    }
+    // Minecraft-style blocks for all pickups (cube reads as "wood/metal/food")
+    const size = r.type === 'metal' ? 18 : 18;
+    const m = new THREE.Mesh(new THREE.BoxGeometry(size, size, size), mat);
     m.castShadow = true;
+    m.userData.mat = mat;
     return m;
   }
 
@@ -312,6 +410,34 @@ export class Renderer3D {
     return pts;
   }
 
+  _buildEmbers() {
+    const N = 160;
+    const geo = new THREE.BufferGeometry();
+    const pos = new Float32Array(N * 3);
+    this._emberVel = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      pos[i * 3] = Math.random() * WORLD.width;
+      pos[i * 3 + 1] = Math.random() * 500;
+      pos[i * 3 + 2] = Math.random() * WORLD.height;
+      this._emberVel[i] = 12 + Math.random() * 26;
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const mat = new THREE.PointsMaterial({ color: 0xff9a3c, size: 4, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false });
+    const pts = new THREE.Points(geo, mat);
+    pts.frustumCulled = false;
+    return pts;
+  }
+
+  _updateEmbers(dt) {
+    const pos = this._embers.geometry.getAttribute('position');
+    for (let i = 0; i < this._emberVel.length; i++) {
+      let y = pos.array[i * 3 + 1] + this._emberVel[i] * dt;
+      if (y > 520) { y = 0; pos.array[i * 3] = Math.random() * WORLD.width; pos.array[i * 3 + 2] = Math.random() * WORLD.height; }
+      pos.array[i * 3 + 1] = y;
+    }
+    pos.needsUpdate = true;
+  }
+
   // ---- per-frame sync ----
   sync(game, dt) {
     // base
@@ -328,6 +454,7 @@ export class Renderer3D {
     this._syncList(game.effects.shockwaves, this.shockMeshes, (s) => this._shockMesh(s), (m, s) => this._updateShock(m, s));
 
     this._updateParticles(game.effects.particles);
+    this._updateEmbers(dt || 0.016);
     this._updatePreview(game);
 
     const active = game.phase === PHASE.GATHER || game.phase === PHASE.DEFEND;
@@ -382,6 +509,10 @@ export class Renderer3D {
       // recoil kick right after firing (cooldown ~ fireInterval)
       const kick = Math.max(0, (d.cooldown / DEFENSES.turret.fireInterval) - 0.7) * 8;
       m.userData.barrel.position.z = 13 - kick;
+      // muzzle flash glow while justFired is active
+      const flash = d.justFired > 0;
+      m.userData.barrel.material.emissive.setHex(flash ? 0xffdd66 : 0x000000);
+      m.userData.barrel.material.emissiveIntensity = flash ? 4 : 0;
     }
     if (d.type === 'bomb' && m.userData.ball) {
       const t = (game.phaseTime * 4) % 1;
@@ -402,8 +533,13 @@ export class Renderer3D {
   }
 
   _updateResource(m, r) {
-    m.position.set(r.x, 22 + Math.sin(r.bob) * 4, r.y);
-    m.rotation.y += 0.03; m.rotation.x += 0.01;
+    m.position.set(r.x, 24 + Math.sin(r.bob) * 5, r.y);
+    m.rotation.y += 0.02;
+    // gentle glow pulse so pickups read as "collectible"
+    if (m.userData.mat) {
+      const base = r.type === 'food' ? 0.7 : r.type === 'metal' ? 0.2 : 0.25;
+      m.userData.mat.emissiveIntensity = base + Math.abs(Math.sin(r.bob)) * 0.5;
+    }
   }
 
   _updateShock(m, sw) {

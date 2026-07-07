@@ -36,6 +36,7 @@ async function boot() {
 
   // Input attaches to the HUD canvas (top layer), so it receives clicks.
   const game = new Game(hudCanvas);
+  globalThis.__game = game; // debug/smoke-test hook
   let renderer;
   try {
     renderer = new Renderer3D(glCanvas, stage);
