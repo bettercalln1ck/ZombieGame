@@ -41,6 +41,7 @@ export class Game {
     this.spawnSchedule = [];
     this.spawnIndex = 0;
     this.seed = 12345;
+    this.slowTimer = 0;
     this.tip = '';
   }
 
@@ -166,7 +167,10 @@ export class Game {
     this.audio.explosion();
     this.effects.burst(bomb.x, bomb.y, '#e67e22', 24, 220);
     this.effects.shock(bomb.x, bomb.y, '#ffae42', DEFENSES.bomb.radius);
+    this.effects.flash(bomb.x, bomb.y, '#ffcf6b', DEFENSES.bomb.radius * 1.2);
+    this.effects.decal(bomb.x, bomb.y, '#2a2208', DEFENSES.bomb.radius);
     this.effects.addShake(12);
+    this.slowTimer = 0.14; // hit-stop
     for (const z of splashTargets(this.zombies, bomb.x, bomb.y, DEFENSES.bomb.radius)) {
       z.hp -= DEFENSES.bomb.damage; z.flash = 0.15;
     }
@@ -180,6 +184,10 @@ export class Game {
       this.effects.update(dt);
       return;
     }
+
+    // Brief hit-stop / slow-mo on big explosions for extra punch. The timer
+    // counts down in real time; the rest of the sim runs on the scaled dt.
+    if (this.slowTimer > 0) { this.slowTimer -= dt; dt *= 0.35; }
 
     this.phaseTime -= dt;
     this.player.update(dt, this.input);
@@ -229,11 +237,16 @@ export class Game {
       p.update(dt);
       if (p.kind === 'bullet') {
         for (const z of this.zombies) {
-          if (dist(p.x, p.y, z.x, z.y) <= z.radius) { z.hp -= p.damage; z.flash = 0.12; p.dead = true; break; }
+          if (dist(p.x, p.y, z.x, z.y) <= z.radius) {
+            z.hp -= p.damage; z.flash = 0.12; p.dead = true;
+            this.effects.spark(p.x, p.y, '#ffe9a0');
+            break;
+          }
         }
       } else if (p.kind === 'acid') {
         if (dist(p.x, p.y, this.base.x, this.base.y) <= this.base.size / 2) {
           this.base.damage(p.damage); this.audio.baseHit(); this.effects.addShake(4); p.dead = true;
+          this.effects.spark(p.x, p.y, '#a6e22e');
         }
       }
     }
@@ -246,11 +259,15 @@ export class Game {
       if (z.dead || z.hp > 0) continue;
       z.dead = true;
       this.effects.burst(z.x, z.y, z.def.color, 10, 140);
+      this.effects.decal(z.x, z.y, z.type === 'spitter' ? '#5aa02a' : '#6e1512', z.radius * 2.4);
       this.audio.zombieHit();
       if (z.def.deathExplosion) {
         this.effects.burst(z.x, z.y, '#a6e22e', 16, 180);
         this.effects.shock(z.x, z.y, '#a6e22e', z.def.deathExplosion.radius);
+        this.effects.flash(z.x, z.y, '#c6ff5a', z.def.deathExplosion.radius);
+        this.effects.decal(z.x, z.y, '#3a2a08', z.def.deathExplosion.radius * 0.9);
         this.effects.addShake(8);
+        this.slowTimer = 0.12; // brief hit-stop for punch
         for (const other of splashTargets(this.zombies, z.x, z.y, z.def.deathExplosion.radius)) {
           if (other !== z) other.hp -= z.def.deathExplosion.damage;
         }

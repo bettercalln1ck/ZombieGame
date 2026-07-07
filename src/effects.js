@@ -4,12 +4,34 @@ export class Effects {
     this.particles = [];
     this.texts = [];
     this.shockwaves = []; // expanding rings, rendered as 3D shockwaves
+    this.decals = [];     // persistent ground stains (blood/goo/scorch)
+    this.flashes = [];    // brief bright light bursts for explosions
     this.shake = 0;
   }
 
   // Expanding blast ring for explosions (bomb, spitter death). maxR in world units.
   shock(x, y, color, maxR) {
     this.shockwaves.push({ x, y, color, maxR, life: 0.5, max: 0.5 });
+  }
+
+  // Tight, fast spark burst for impacts (bullets hitting zombies, etc.).
+  spark(x, y, color, count = 6) {
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = 140 + Math.random() * 160;
+      this.particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.28, max: 0.28, color, r: 1.5 + Math.random() * 2 });
+    }
+  }
+
+  // Persistent ground stain that slowly fades. Capped so it can't grow forever.
+  decal(x, y, color, radius, life = 9) {
+    this.decals.push({ x, y, color, radius, rot: Math.random() * Math.PI, life, max: life });
+    if (this.decals.length > 60) this.decals.shift();
+  }
+
+  // Short bright flash (with a burst of debris) for big explosions.
+  flash(x, y, color, radius) {
+    this.flashes.push({ x, y, color, radius, life: 0.22, max: 0.22 });
   }
 
   burst(x, y, color, count = 8, speed = 120) {
@@ -36,6 +58,10 @@ export class Effects {
     this.texts = this.texts.filter((t) => t.life > 0);
     for (const s of this.shockwaves) s.life -= dt;
     this.shockwaves = this.shockwaves.filter((s) => s.life > 0);
+    for (const f of this.flashes) f.life -= dt;
+    this.flashes = this.flashes.filter((f) => f.life > 0);
+    for (const d of this.decals) d.life -= dt;
+    this.decals = this.decals.filter((d) => d.life > 0);
     this.shake *= 0.85;
     if (this.shake < 0.3) this.shake = 0;
   }

@@ -6,6 +6,8 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
 import { WORLD, BASE, DEFENSES, PLACE_RADIUS, ZOMBIES } from './config.js';
 import { snapToGrid, validatePlacement } from './systems/grid.js';
 import { PHASE } from './systems/phase.js';
@@ -73,7 +75,13 @@ function textures() {
   });
   cobble.wrapS = cobble.wrapT = THREE.RepeatWrapping;
   cobble.repeat.set(WORLD.width / 96, WORLD.height / 96);
-  _tex = { wood, metal, food, cobble };
+  // GRASS patch for ground variety
+  const grass = pixelCanvas(G, (g) => {
+    px(g, 0, 0, G, G, '#2f4a24');
+    for (let i = 0; i < 90; i++) px(g, (Math.random() * G) | 0, (Math.random() * G) | 0, 1, 2, jitter('#3c6130', 0.16));
+  });
+  grass.wrapS = grass.wrapT = THREE.RepeatWrapping;
+  _tex = { wood, metal, food, cobble, grass };
   return _tex;
 }
 
@@ -87,7 +95,7 @@ export class Renderer3D {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
+    this.renderer.toneMappingExposure = 1.3;
 
     this.scene = new THREE.Scene();
     this.scene.background = col('#0b1220');
@@ -97,8 +105,14 @@ export class Renderer3D {
     this.camBase = new THREE.Vector3(WORLD.width / 2, 900, WORLD.height / 2 + 800);
     this.camLook = new THREE.Vector3(WORLD.width / 2, 0, WORLD.height / 2);
 
+    this._t = 0;
+    this._lastPhase = null;
+    this._zoom = 0;        // wave-start zoom-punch impulse
+    this._corpses = [];    // dying zombie meshes animating out
+    this._sky();
     this._lights();
     this._ground();
+    this._props();
 
     // meshes keyed by their game entity object
     this.zMeshes = new Map();
@@ -126,12 +140,106 @@ export class Renderer3D {
     this._groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     this._tmp = new THREE.Vector3();
     this._ndc = new THREE.Vector2();
+    this._q = new THREE.Quaternion();
 
     this._composer();
     this.resize();
   }
 
   // ---- setup helpers ----
+  _sky() {
+    // Gradient dusk dome (dark navy at horizon -> near-black overhead) + moon.
+    const c = document.createElement('canvas'); c.width = 16; c.height = 256;
+    const g = c.getContext('2d');
+    const grad = g.createLinearGradient(0, 0, 0, 256);
+    grad.addColorStop(0, '#05070f');
+    grad.addColorStop(0.55, '#0b1428');
+    grad.addColorStop(0.8, '#1b2b45');
+    grad.addColorStop(1, '#2a3a54');
+    g.fillStyle = grad; g.fillRect(0, 0, 16, 256);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(3400, 32, 16),
+      new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false })
+    );
+    dome.position.set(WORLD.width / 2, 0, WORLD.height / 2);
+    this.scene.add(dome);
+
+    const moon = new THREE.Mesh(
+      new THREE.SphereGeometry(120, 24, 16),
+      new THREE.MeshBasicMaterial({ color: 0xfff2d0, fog: false })
+    );
+    moon.position.set(WORLD.width / 2 - 1400, 1500, WORLD.height / 2 - 2200);
+    this.scene.add(moon);
+  }
+
+  _props() {
+    // Grass patches for ground variety
+    const grassMat = new THREE.MeshStandardMaterial({ map: textures().grass, color: 0x9fb090, roughness: 1 });
+    const rand = mulberry(7);
+    for (let i = 0; i < 5; i++) {
+      const w = 160 + rand() * 220, h = 120 + rand() * 200;
+      const patch = new THREE.Mesh(new THREE.PlaneGeometry(w, h), grassMat);
+      patch.rotation.x = -Math.PI / 2;
+      patch.position.set(120 + rand() * (WORLD.width - 240), 1.2, 120 + rand() * (WORLD.height - 240));
+      patch.receiveShadow = true;
+      this.scene.add(patch);
+    }
+
+    // Sandbag ring around the base (tan capsules)
+    const sandMat = new THREE.MeshStandardMaterial({ color: 0x9c8a5a, roughness: 1 });
+    for (let a = 0; a < Math.PI * 2; a += Math.PI / 10) {
+      const r = BASE.size * 0.95;
+      const bag = new THREE.Mesh(new THREE.CapsuleGeometry(9, 20, 4, 8), sandMat);
+      bag.position.set(BASE.x + Math.cos(a) * r, 9, BASE.y + Math.sin(a) * r);
+      bag.rotation.z = Math.PI / 2; bag.rotation.y = a;
+      bag.castShadow = true; bag.receiveShadow = true;
+      this.scene.add(bag);
+    }
+
+    // Streetlights that cast real light (limited count for perf)
+    const lampPos = [[180, 180], [WORLD.width - 180, 180], [180, WORLD.height - 180], [WORLD.width - 180, WORLD.height - 180]];
+    for (const [x, z] of lampPos) {
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(4, 5, 150, 8),
+        new THREE.MeshStandardMaterial({ color: 0x2a2f36, roughness: 0.6, metalness: 0.6 }));
+      pole.position.set(x, 75, z); pole.castShadow = true; this.scene.add(pole);
+      const headM = new THREE.Mesh(new THREE.BoxGeometry(26, 8, 14),
+        new THREE.MeshStandardMaterial({ color: 0x1a1e24, emissive: 0xffd070, emissiveIntensity: 1.0 }));
+      headM.position.set(x, 150, z); this.scene.add(headM);
+      const lamp = new THREE.PointLight(0xffcf80, 1.3, 560, 2);
+      lamp.position.set(x, 148, z); this.scene.add(lamp);
+    }
+
+    // A few abandoned cars + barrels for street clutter
+    const carBody = new THREE.MeshStandardMaterial({ color: 0x5a2b2b, roughness: 0.5, metalness: 0.4 });
+    const carGlass = new THREE.MeshStandardMaterial({ color: 0x223, roughness: 0.2, metalness: 0.6, emissive: 0x111a2a, emissiveIntensity: 0.5 });
+    const carSpots = [[300, 520], [980, 200], [760, 560]];
+    for (const [x, z] of carSpots) {
+      const car = new THREE.Group();
+      const b = new THREE.Mesh(new THREE.BoxGeometry(46, 22, 90), carBody); b.position.y = 16; b.castShadow = true; car.add(b);
+      const cab = new THREE.Mesh(new THREE.BoxGeometry(42, 20, 44), carGlass); cab.position.set(0, 34, -4); car.add(cab);
+      for (const hx of [-16, 16]) { const hl = new THREE.Mesh(new THREE.SphereGeometry(4, 8, 6), new THREE.MeshStandardMaterial({ color: 0xffffcc, emissive: 0xfff0a0, emissiveIntensity: 2 })); hl.position.set(hx, 16, 46); car.add(hl); }
+      car.position.set(x, 0, z); car.rotation.y = (x + z) % 3; this.scene.add(car);
+    }
+    const barrelMat = new THREE.MeshStandardMaterial({ color: 0x3b6b3b, roughness: 0.6, metalness: 0.4 });
+    const rb = mulberry(21);
+    for (let i = 0; i < 7; i++) {
+      const bar = new THREE.Mesh(new THREE.CylinderGeometry(11, 11, 30, 12), barrelMat);
+      bar.position.set(150 + rb() * (WORLD.width - 300), 15, 150 + rb() * (WORLD.height - 300));
+      bar.castShadow = true; this.scene.add(bar);
+    }
+
+    // pool of point lights reused for explosions
+    this._flashLights = [];
+    for (let i = 0; i < 4; i++) {
+      const L = new THREE.PointLight(0xffaa44, 0, 400, 2);
+      this.scene.add(L); this._flashLights.push(L);
+    }
+    this._decalMeshes = new Map();
+    this._flashMeshes = new Map();
+  }
+
   _lights() {
     // Night-apocalypse mood: cool sky fill + warm "moon/searchlight" key,
     // plus a colored rim light so silhouettes pop against the dark ground.
@@ -186,14 +294,16 @@ export class Renderer3D {
     grid.material.transparent = true; grid.material.opacity = 0.35;
     this.scene.add(grid);
 
-    // perimeter buildings for a "town" backdrop (outside the play area)
-    const bmat = new THREE.MeshStandardMaterial({ color: 0x2a2f38, roughness: 0.8 });
+    // perimeter buildings for a "town" backdrop (outside the play area), with
+    // scattered lit windows for a distant-city feel.
+    const bmat = new THREE.MeshStandardMaterial({ color: 0x21262e, roughness: 0.85 });
+    const winMat = new THREE.MeshStandardMaterial({ color: 0xffd98a, emissive: 0xffcf6b, emissiveIntensity: 1.1 });
     const rand = mulberry(99);
-    for (let i = 0; i < 26; i++) {
+    for (let i = 0; i < 30; i++) {
       const edge = i % 4;
-      const w = 90 + rand() * 130, h = 120 + rand() * 340, d = 90 + rand() * 130;
+      const w = 100 + rand() * 150, h = 160 + rand() * 420, d = 100 + rand() * 150;
       const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), bmat);
-      let x, z, off = 140 + rand() * 260;
+      let x, z, off = 160 + rand() * 320;
       if (edge === 0) { x = rand() * WORLD.width; z = -off; }
       else if (edge === 1) { x = WORLD.width + off; z = rand() * WORLD.height; }
       else if (edge === 2) { x = rand() * WORLD.width; z = WORLD.height + off; }
@@ -201,17 +311,39 @@ export class Renderer3D {
       m.position.set(x, h / 2, z);
       m.castShadow = true; m.receiveShadow = true;
       this.scene.add(m);
+      // lit windows on the two faces that point toward the arena
+      const cols = Math.max(2, Math.floor(w / 34)), rows = Math.max(3, Math.floor(h / 60));
+      const faceZ = z < WORLD.height / 2 ? d / 2 + 1 : -d / 2 - 1;
+      for (let cx = 0; cx < cols; cx++) for (let ry = 0; ry < rows; ry++) {
+        if (rand() < 0.5) continue;
+        const win = new THREE.Mesh(new THREE.BoxGeometry(12, 16, 1), winMat);
+        win.position.set((cx - (cols - 1) / 2) * (w / cols), (ry - (rows - 1) / 2) * (h / rows), faceZ);
+        m.add(win);
+      }
     }
   }
 
   _composer() {
     const c = new EffectComposer(this.renderer);
     c.addPass(new RenderPass(this.scene, this.camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(1280, 720), 1.25, 0.6, 0.62);
+
+    // Mild depth-of-field (guarded — skip if the addon misbehaves).
+    try {
+      const bokeh = new BokehPass(this.scene, this.camera, { focus: 1250, aperture: 0.00002, maxblur: 0.0012 });
+      c.addPass(bokeh);
+      this.bokeh = bokeh;
+    } catch (e) { /* DOF optional */ }
+
+    const bloom = new UnrealBloomPass(new THREE.Vector2(1280, 720), 1.0, 0.55, 0.72);
     c.addPass(bloom);
+    this.bloom = bloom;
+
+    // Grade pass: vignette + film grain + subtle chromatic aberration + teal/orange.
+    this.grade = new ShaderPass(GRADE_SHADER);
+    c.addPass(this.grade);
+
     c.addPass(new OutputPass());
     this.composer = c;
-    this.bloom = bloom;
   }
 
   // ---- entity mesh builders ----
@@ -286,6 +418,8 @@ export class Renderer3D {
     }
     g.userData.body = body;
     g.userData.baseColor = col(def.color);
+    g.userData.phase = Math.random() * Math.PI * 2;
+    g.userData.rad = r;
     g.userData.bar = this._hpBar(r * 3.3, r * 2);
     g.add(g.userData.bar.group);
     return g;
@@ -358,9 +492,21 @@ export class Renderer3D {
   }
 
   _projectileMesh(p) {
-    const c = p.kind === 'acid' ? 0xa6e22e : 0xffe066;
-    return new THREE.Mesh(new THREE.SphereGeometry(p.kind === 'acid' ? 5 : 3.2, 10, 8),
-      new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 2.2 }));
+    if (p.kind === 'acid') {
+      return new THREE.Mesh(new THREE.SphereGeometry(5, 10, 8),
+        new THREE.MeshStandardMaterial({ color: 0xa6e22e, emissive: 0xa6e22e, emissiveIntensity: 2.4 }));
+    }
+    // bullet = glowing core + additive trailing tracer
+    const g = new THREE.Group();
+    const core = new THREE.Mesh(new THREE.SphereGeometry(3.4, 10, 8),
+      new THREE.MeshStandardMaterial({ color: 0xfff2a0, emissive: 0xffe066, emissiveIntensity: 3 }));
+    g.add(core);
+    const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 3, 34, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffd45a, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }));
+    tail.rotation.x = Math.PI / 2;  // align cylinder along local +Z
+    tail.position.z = -17;          // trail behind travel direction
+    g.add(tail);
+    return g;
   }
 
   _shockMesh(sw) {
@@ -440,6 +586,15 @@ export class Renderer3D {
 
   // ---- per-frame sync ----
   sync(game, dt) {
+    dt = dt || 0.016;
+    this._t += dt;
+    if (this.grade) this.grade.uniforms.uTime.value = this._t;
+
+    // wave-start zoom punch on GATHER -> DEFEND
+    if (this._lastPhase === PHASE.GATHER && game.phase === PHASE.DEFEND) this._zoom = 1;
+    this._lastPhase = game.phase;
+    this._zoom *= 0.92; if (this._zoom < 0.01) this._zoom = 0;
+
     // base
     const bodyMat = this._base.userData.body.material;
     bodyMat.emissive.setHex(game.base.flash > 0 ? 0xff3b3b : 0x000000);
@@ -447,28 +602,103 @@ export class Renderer3D {
     // player
     this._player.position.set(game.player.x, 0, game.player.y);
 
-    this._syncList(game.zombies, this.zMeshes, (z) => this._zombieMesh(z), (m, z) => this._updateZombie(m, z, game));
+    this._syncList(game.zombies, this.zMeshes, (z) => this._zombieMesh(z), (m, z) => this._updateZombie(m, z, game), (m) => this._retireZombie(m));
     this._syncList(game.defenses, this.dMeshes, (d) => this._defenseMesh(d), (m, d) => this._updateDefense(m, d, game, dt));
     this._syncList(game.resources, this.rMeshes, (r) => this._resourceMesh(r), (m, r) => this._updateResource(m, r));
-    this._syncList(game.projectiles, this.pMeshes, (p) => this._projectileMesh(p), (m, p) => m.position.set(p.x, 16, p.y));
+    this._syncList(game.projectiles, this.pMeshes, (p) => this._projectileMesh(p), (m, p) => this._updateProjectile(m, p));
     this._syncList(game.effects.shockwaves, this.shockMeshes, (s) => this._shockMesh(s), (m, s) => this._updateShock(m, s));
+    this._syncList(game.effects.decals, this._decalMeshes, (s) => this._decalMesh(s), (m, s) => this._updateDecal(m, s));
+    this._syncFlashes(game.effects.flashes);
+    this._updateCorpses(dt);
 
     this._updateParticles(game.effects.particles);
-    this._updateEmbers(dt || 0.016);
+    this._updateEmbers(dt);
     this._updatePreview(game);
 
     const active = game.phase === PHASE.GATHER || game.phase === PHASE.DEFEND;
     this._placeRing.visible = active;
 
-    // camera + shake
+    // camera: gentle drift + shake + wave-start dolly-in
     const sh = game.effects.shakeOffset();
-    this.camera.position.set(this.camBase.x + sh.x * 2.5, this.camBase.y, this.camBase.z + sh.y * 2.5);
+    const driftX = Math.sin(this._t * 0.13) * 26;
+    const driftZ = Math.cos(this._t * 0.11) * 18;
+    const zoom = this._zoom * 220;
+    this.camera.position.set(
+      this.camBase.x + driftX + sh.x * 2.5,
+      this.camBase.y - zoom * 0.5,
+      this.camBase.z + driftZ - zoom + sh.y * 2.5
+    );
     this.camera.lookAt(this.camLook);
   }
 
-  _syncList(list, map, create, update) {
-    const seen = this._seen || (this._seen = new Set());
-    seen.clear();
+  // dying zombies detach into corpses that tip over, sink, and fade out
+  _retireZombie(mesh) {
+    mesh.traverse((o) => { if (o.material) { o.material = o.material.clone(); o.material.transparent = true; } });
+    this._corpses.push({ mesh, t: 0, dir: Math.random() * Math.PI * 2 });
+  }
+
+  _updateCorpses(dt) {
+    for (const c of this._corpses) {
+      c.t += dt;
+      const k = Math.min(1, c.t / 0.7);
+      c.mesh.rotation.z = Math.cos(c.dir) * k * 1.3;
+      c.mesh.rotation.x = Math.sin(c.dir) * k * 1.3;
+      c.mesh.position.y = -k * 8;
+      c.mesh.traverse((o) => { if (o.material && o.material.opacity !== undefined) o.material.opacity = 1 - k; });
+    }
+    const done = this._corpses.filter((c) => c.t >= 0.7);
+    for (const c of done) { this.scene.remove(c.mesh); disposeObj(c.mesh); }
+    this._corpses = this._corpses.filter((c) => c.t < 0.7);
+  }
+
+  _syncFlashes(flashes) {
+    // meshes
+    const seen = new Set();
+    for (const f of flashes) {
+      let m = this._flashMeshes.get(f);
+      if (!m) {
+        m = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12),
+          new THREE.MeshBasicMaterial({ color: col(f.color), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+        this.scene.add(m); this._flashMeshes.set(f, m);
+      }
+      const k = 1 - f.life / f.max;
+      const s = Math.max(1, f.radius * (0.4 + k * 0.8));
+      m.position.set(f.x, 24, f.y); m.scale.setScalar(s);
+      m.material.opacity = (1 - k) * 0.9;
+      seen.add(f);
+    }
+    for (const [f, m] of this._flashMeshes) if (!seen.has(f)) { this.scene.remove(m); disposeObj(m); this._flashMeshes.delete(f); }
+    // pooled dynamic lights follow the freshest flashes
+    for (let i = 0; i < this._flashLights.length; i++) {
+      const f = flashes[i];
+      const L = this._flashLights[i];
+      if (f) { L.position.set(f.x, 60, f.y); L.color.set(f.color); L.intensity = (f.life / f.max) * 6; L.distance = f.radius * 3; }
+      else L.intensity = 0;
+    }
+  }
+
+  _decalMesh() {
+    const m = new THREE.Mesh(new THREE.CircleGeometry(1, 18),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, depthWrite: false }));
+    m.rotation.x = -Math.PI / 2;
+    return m;
+  }
+
+  _updateDecal(m, s) {
+    m.position.set(s.x, 1.6, s.y);
+    m.rotation.z = s.rot;
+    m.scale.setScalar(s.radius);
+    m.material.color.set(s.color);
+    m.material.opacity = Math.min(0.6, (s.life / s.max) * 0.7);
+  }
+
+  _updateProjectile(m, p) {
+    m.position.set(p.x, 16, p.y);
+    m.rotation.y = Math.atan2(p.vx, p.vy); // orient tracer along travel
+  }
+
+  _syncList(list, map, create, update, onRemove) {
+    const seen = new Set();
     for (const e of list) {
       let m = map.get(e);
       if (!m) { m = create(e); this.scene.add(m); map.set(e, m); }
@@ -476,24 +706,35 @@ export class Renderer3D {
       seen.add(e);
     }
     for (const [e, m] of map) {
-      if (!seen.has(e)) { this.scene.remove(m); disposeObj(m); map.delete(e); }
+      if (!seen.has(e)) {
+        map.delete(e);
+        if (onRemove) onRemove(m); // e.g. detach as an animating corpse
+        else { this.scene.remove(m); disposeObj(m); }
+      }
     }
   }
 
   _updateZombie(m, z, game) {
-    m.position.set(z.x, 0, z.y);
+    // walk cycle: bob up/down + forward lurch, faster for quicker zombies
+    const spd = z.speed / 60;
+    const t = this._t * (2 + spd) + m.userData.phase;
+    const bob = Math.abs(Math.sin(t)) * (z.wanderer ? 1.5 : 3.5);
+    m.position.set(z.x, bob, z.y);
     const body = m.userData.body;
     body.material.emissive.setHex(z.flash > 0 ? 0xffffff : (z.type === 'spitter' ? 0x8e44ad : 0x000000));
     body.material.emissiveIntensity = z.flash > 0 ? 1.0 : (z.type === 'spitter' ? 0.7 : 0);
-    // face the base
+    // face the base, with a forward lurch lean
     m.rotation.y = Math.atan2(game.base.x - z.x, game.base.y - z.y);
+    m.rotation.x = 0.12 + Math.sin(t) * 0.08;
     // hp bar
     const bar = m.userData.bar;
     const frac = Math.max(0, z.hp / z.maxHp);
     bar.group.visible = z.hp < z.maxHp && !z.wanderer;
     bar.fg.scale.x = frac;
     bar.fg.position.x = -bar.width * (1 - frac) / 2;
-    bar.group.quaternion.copy(this.camera.quaternion);
+    // counter the parent's rotation so the bar still faces the camera
+    m.getWorldQuaternion(this._q);
+    bar.group.quaternion.copy(this._q).invert().multiply(this.camera.quaternion);
   }
 
   _updateDefense(m, d, game, dt) {
@@ -615,6 +856,45 @@ export class Renderer3D {
     this.camera.updateProjectionMatrix();
   }
 }
+
+// Combined grade pass: vignette + film grain + chromatic aberration + teal/orange.
+const GRADE_SHADER = {
+  uniforms: {
+    tDiffuse: { value: null },
+    uTime: { value: 0 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+  `,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float uTime;
+    varying vec2 vUv;
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    void main() {
+      vec2 uv = vUv;
+      vec2 d = uv - 0.5;
+      float r2 = dot(d, d);
+      // chromatic aberration: push R out, B in, scaled by distance from center
+      float ca = 0.0016 * r2 * 4.0;
+      vec3 col;
+      col.r = texture2D(tDiffuse, uv + d * ca).r;
+      col.g = texture2D(tDiffuse, uv).g;
+      col.b = texture2D(tDiffuse, uv - d * ca).b;
+      // teal/orange grade: warm highlights, cool shadows
+      float luma = dot(col, vec3(0.299, 0.587, 0.114));
+      col = mix(col * vec3(0.88, 0.97, 1.12), col * vec3(1.12, 1.02, 0.86), smoothstep(0.25, 0.85, luma));
+      // vignette (gentle)
+      float vig = smoothstep(1.15, 0.15, r2 * 1.35);
+      col *= mix(0.78, 1.0, vig);
+      // film grain (subtle)
+      float g = hash(uv * vec2(1920.0, 1080.0) + fract(uTime) * 100.0);
+      col += (g - 0.5) * 0.015;
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `,
+};
 
 // dispose a group/mesh subtree
 function disposeObj(obj) {
