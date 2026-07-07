@@ -3,7 +3,13 @@ export class Effects {
   constructor() {
     this.particles = [];
     this.texts = [];
+    this.shockwaves = []; // expanding rings, rendered as 3D shockwaves
     this.shake = 0;
+  }
+
+  // Expanding blast ring for explosions (bomb, spitter death). maxR in world units.
+  shock(x, y, color, maxR) {
+    this.shockwaves.push({ x, y, color, maxR, life: 0.5, max: 0.5 });
   }
 
   burst(x, y, color, count = 8, speed = 120) {
@@ -28,6 +34,8 @@ export class Effects {
     this.particles = this.particles.filter((p) => p.life > 0);
     for (const t of this.texts) { t.y -= 24 * dt; t.life -= dt; }
     this.texts = this.texts.filter((t) => t.life > 0);
+    for (const s of this.shockwaves) s.life -= dt;
+    this.shockwaves = this.shockwaves.filter((s) => s.life > 0);
     this.shake *= 0.85;
     if (this.shake < 0.3) this.shake = 0;
   }

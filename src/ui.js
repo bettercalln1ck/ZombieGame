@@ -53,6 +53,23 @@ export function drawHUD(ctx, game) {
   ctx.textAlign = 'left';
 }
 
+// Floating combat text ("+5 wood", "+10 HP", placement errors) drawn on the HUD
+// overlay in the 3D path. `project` maps world (x,y) -> screen pixels.
+export function drawFloatTexts(ctx, effects, project) {
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 16px system-ui';
+  for (const t of effects.texts) {
+    const p = project(t.x, t.y);
+    ctx.globalAlpha = Math.max(0, t.life / t.max);
+    ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 3;
+    ctx.fillStyle = t.color;
+    ctx.strokeText(t.text, p.x, p.y);
+    ctx.fillText(t.text, p.x, p.y);
+  }
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'left';
+}
+
 export function drawTip(ctx, text) {
   if (!text) return;
   ctx.textAlign = 'center';

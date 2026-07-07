@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "smoke": "node scripts/smoke3d.mjs"
   },
   "devDependencies": {
+    "puppeteer-core": "^23.0.0",
     "vitest": "^2.1.0"
   }
 }

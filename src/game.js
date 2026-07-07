@@ -132,8 +132,13 @@ export class Game {
   }
 
   handleClick() {
-    const mx = this.input.mouse.x, my = this.input.mouse.y;
-    if (my < 54 || my > this.canvas.height - 56) return;
+    // HUD band check stays in screen space (the HUD overlay is 1280x720).
+    if (this.input.mouse.y < 54 || this.input.mouse.y > this.canvas.height - 56) return;
+    // Placement uses world coordinates. In 3D these come from a ground raycast
+    // (input.world, set by the render loop); in 2D they equal the screen mouse.
+    const src = this.input.world || { x: this.input.mouse.x, y: this.input.mouse.y };
+    if (!src) return;
+    const mx = src.x, my = src.y;
 
     if (this.phase === PHASE.DEFEND) {
       for (const d of this.defenses) {
@@ -160,6 +165,7 @@ export class Game {
     bomb.armed = false; bomb.dead = true;
     this.audio.explosion();
     this.effects.burst(bomb.x, bomb.y, '#e67e22', 24, 220);
+    this.effects.shock(bomb.x, bomb.y, '#ffae42', DEFENSES.bomb.radius);
     this.effects.addShake(12);
     for (const z of splashTargets(this.zombies, bomb.x, bomb.y, DEFENSES.bomb.radius)) {
       z.hp -= DEFENSES.bomb.damage; z.flash = 0.15;
@@ -243,6 +249,7 @@ export class Game {
       this.audio.zombieHit();
       if (z.def.deathExplosion) {
         this.effects.burst(z.x, z.y, '#a6e22e', 16, 180);
+        this.effects.shock(z.x, z.y, '#a6e22e', z.def.deathExplosion.radius);
         this.effects.addShake(8);
         for (const other of splashTargets(this.zombies, z.x, z.y, z.def.deathExplosion.radius)) {
           if (other !== z) other.hp -= z.def.deathExplosion.damage;
@@ -291,6 +298,18 @@ export class Game {
 
     ctx.restore();
 
+    if (this.phase === PHASE.TITLE) { drawTitle(ctx); return; }
+    drawHUD(ctx, this);
+    if (this.tip) drawTip(ctx, this.tip);
+    if (this.phase === PHASE.ROUND_END) drawRoundEnd(ctx, this);
+    if (this.phase === PHASE.VICTORY) drawVictory(ctx);
+    if (this.phase === PHASE.GAMEOVER) drawGameOver(ctx, this);
+  }
+
+  // HUD/screens only — used by the 3D render path, where render3d.js draws the
+  // world and this draws the interface on the transparent overlay canvas.
+  drawHUDOnly(ctx) {
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     if (this.phase === PHASE.TITLE) { drawTitle(ctx); return; }
     drawHUD(ctx, this);
     if (this.tip) drawTip(ctx, this.tip);
