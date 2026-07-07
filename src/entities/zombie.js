@@ -18,7 +18,7 @@ export class Zombie {
 
   update(dt, ctx) {
     if (this.flash > 0) this.flash -= dt;
-    if (this.hp <= 0) { this.dead = true; return; }
+    if (this.hp <= 0) return; // dead this frame; Game runs death effects + removal
 
     const { base } = ctx;
     const dToBase = dist(this.x, this.y, base.x, base.y);

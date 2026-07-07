@@ -217,24 +217,7 @@ export class Game {
                    audio: this.audio, projectiles: this.projectiles, active };
     for (const z of this.zombies) {
       if (!z.wanderer) z.update(dt, zctx);
-      if (z.hp <= 0 && !z.dead) {
-        z.dead = true;
-        this.effects.burst(z.x, z.y, z.def.color, 10, 140);
-        this.audio.zombieHit();
-        if (z.def.deathExplosion) {
-          this.effects.burst(z.x, z.y, '#a6e22e', 16, 180);
-          this.effects.addShake(8);
-          for (const other of splashTargets(this.zombies, z.x, z.y, z.def.deathExplosion.radius)) {
-            if (other !== z) other.hp -= z.def.deathExplosion.damage;
-          }
-          for (const d of this.defenses) {
-            if (dist(d.x, d.y, z.x, z.y) <= z.def.deathExplosion.radius) d.damage(z.def.deathExplosion.damage);
-          }
-          if (dist(this.base.x, this.base.y, z.x, z.y) <= z.def.deathExplosion.radius) this.base.damage(z.def.deathExplosion.damage);
-        }
-      }
     }
-    this.zombies = this.zombies.filter((z) => !z.dead);
 
     for (const p of this.projectiles) {
       p.update(dt);
@@ -249,6 +232,28 @@ export class Game {
       }
     }
     this.projectiles = this.projectiles.filter((p) => !p.dead);
+
+    // Process zombie deaths AFTER all damage sources this frame (spikes, bullets,
+    // splash). Runs here (not in the move loop) so death effects + the spitter's
+    // death explosion actually fire the same frame the killing blow lands.
+    for (const z of this.zombies) {
+      if (z.dead || z.hp > 0) continue;
+      z.dead = true;
+      this.effects.burst(z.x, z.y, z.def.color, 10, 140);
+      this.audio.zombieHit();
+      if (z.def.deathExplosion) {
+        this.effects.burst(z.x, z.y, '#a6e22e', 16, 180);
+        this.effects.addShake(8);
+        for (const other of splashTargets(this.zombies, z.x, z.y, z.def.deathExplosion.radius)) {
+          if (other !== z) other.hp -= z.def.deathExplosion.damage;
+        }
+        for (const d of this.defenses) {
+          if (dist(d.x, d.y, z.x, z.y) <= z.def.deathExplosion.radius) d.damage(z.def.deathExplosion.damage);
+        }
+        if (dist(this.base.x, this.base.y, z.x, z.y) <= z.def.deathExplosion.radius) this.base.damage(z.def.deathExplosion.damage);
+      }
+    }
+    this.zombies = this.zombies.filter((z) => !z.dead);
 
     this.effects.update(dt);
 
