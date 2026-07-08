@@ -52,23 +52,23 @@ export const ZOMBIES = {
 
 // Wave composition per round (design §7.2)
 export const WAVES = {
-  1:  { runner: 8,  brute: 0,  spitter: 0 },
-  2:  { runner: 10, brute: 0,  spitter: 0 },
-  3:  { runner: 8,  brute: 3,  spitter: 0 },
-  4:  { runner: 8,  brute: 4,  spitter: 0 },
-  5:  { runner: 8,  brute: 5,  spitter: 2 },
-  6:  { runner: 6,  brute: 6,  spitter: 3 },
-  7:  { runner: 5,  brute: 8,  spitter: 4 },
-  8:  { runner: 4,  brute: 10, spitter: 5 },
+  1:  { runner: 10,  brute: 0,  spitter: 0 },
+  2:  { runner: 12, brute: 0,  spitter: 0 },
+  3:  { runner: 10,  brute: 3,  spitter: 0 },
+  4:  { runner: 10,  brute: 4,  spitter: 0 },
+  5:  { runner: 10,  brute: 5,  spitter: 2 },
+  6:  { runner: 8,  brute: 6,  spitter: 3 },
+  7:  { runner: 6,  brute: 8,  spitter: 4 },
+  8:  { runner: 5,  brute: 10, spitter: 5 },
   9:  { runner: 3,  brute: 12, spitter: 6 },
-  10: { runner: 2,  brute: 15, spitter: 8 },
+  10: { runner: 1,  brute: 15, spitter: 8 },
 };
 export const TOTAL_ROUNDS = 10;
 
 // Phase timing in seconds (design §2.1, §9.2)
 export const TIMING = {
   gatherRound1: 45,
-  gather: 90,
+  gather: 45,
   defend: 120,
   firstSpawnDelay: 5,     // delay after defend starts before first zombie
   spawnWindow: 40,        // zombies spawn spread across this many seconds
